@@ -74,6 +74,8 @@ const recorderState = vi.hoisted(() => ({
 		setSystemAudioEnabled: vi.fn(),
 		cursorCaptureMode: "editable-overlay",
 		setCursorCaptureMode: vi.fn(),
+		cameraOnly: false,
+		setCameraOnly: vi.fn(),
 		softwareEncoderFallbackNoticeVisible: false,
 		dismissSoftwareEncoderFallbackNotice: vi.fn(),
 		recordingPrefsLoaded: true,
@@ -368,6 +370,8 @@ function resetLaunchMocks() {
 	recorderState.value.setMicrophoneDeviceId.mockClear();
 	recorderState.value.webcamEnabled = false;
 	recorderState.value.setWebcamEnabled.mockClear();
+	recorderState.value.cameraOnly = false;
+	recorderState.value.setCameraOnly.mockClear();
 	recorderState.value.recordingPrefsLoaded = true;
 	cameraDevicesState.isReady = true;
 	cameraDevicesState.devices = [];
@@ -1902,6 +1906,86 @@ describe("LaunchWindow device buttons", () => {
 		await waitFor(() => {
 			expect(recorderState.value.setWebcamEnabled).toHaveBeenCalledWith(false);
 		});
+	});
+});
+
+// getopenscreen/openscreen#1276
+describe("LaunchWindow camera only", () => {
+	beforeEach(() => {
+		platformState.value = "darwin";
+		resetLaunchMocks();
+	});
+
+	afterEach(() => {
+		cleanup();
+		vi.unstubAllGlobals();
+	});
+
+	it("turns the camera on with camera only, and stores both", async () => {
+		renderLaunchWindow();
+		const toggle = await screen.findByTestId("launch-camera-only-button");
+		expect(toggle).toHaveAttribute("aria-pressed", "false");
+
+		fireEvent.click(toggle);
+
+		await waitFor(() => {
+			expect(window.electronAPI.setRecordingPrefs).toHaveBeenCalledWith({
+				camEnabled: true,
+				cameraOnly: true,
+			});
+		});
+		expect(recorderState.value.setWebcamEnabled).toHaveBeenCalledWith(true);
+		expect(recorderState.value.setCameraOnly).toHaveBeenCalledWith(true);
+	});
+
+	it("stays off when the camera cannot be turned on", async () => {
+		recorderState.value.setWebcamEnabled.mockResolvedValueOnce(false);
+		renderLaunchWindow();
+
+		fireEvent.click(await screen.findByTestId("launch-camera-only-button"));
+
+		await waitFor(() => {
+			expect(recorderState.value.setWebcamEnabled).toHaveBeenCalledWith(true);
+		});
+		await act(async () => undefined);
+		expect(recorderState.value.setCameraOnly).not.toHaveBeenCalled();
+		expect(window.electronAPI.setRecordingPrefs).not.toHaveBeenCalled();
+	});
+
+	it("records without a source: no source button, and Record never opens the picker", async () => {
+		recorderState.value.cameraOnly = true;
+		recorderState.value.webcamEnabled = true;
+		renderLaunchWindow();
+
+		const recordButton = await screen.findByTestId("launch-record-button");
+		expect(recordButton).toHaveAttribute("aria-label", "Start recording");
+		expect(screen.queryByTestId("launch-source-selector-button")).toBeNull();
+		// Both come from screen capture, which a camera-only take does not run.
+		expect(screen.queryByTestId("launch-system-audio-button")).toBeNull();
+		expect(screen.queryByTestId("launch-cursor-mode-button")).toBeNull();
+
+		fireEvent.click(recordButton);
+
+		await waitFor(() => {
+			expect(recorderState.value.toggleRecording).toHaveBeenCalledTimes(1);
+		});
+		expect(window.electronAPI.openSourceSelector).not.toHaveBeenCalled();
+	});
+
+	it("leaves camera only when the camera is switched off", async () => {
+		recorderState.value.cameraOnly = true;
+		recorderState.value.webcamEnabled = true;
+		renderLaunchWindow();
+
+		fireEvent.click(await screen.findByTestId("launch-webcam-button"));
+
+		await waitFor(() => {
+			expect(window.electronAPI.setRecordingPrefs).toHaveBeenCalledWith({
+				camEnabled: false,
+				cameraOnly: false,
+			});
+		});
+		expect(recorderState.value.setCameraOnly).toHaveBeenCalledWith(false);
 	});
 });
 

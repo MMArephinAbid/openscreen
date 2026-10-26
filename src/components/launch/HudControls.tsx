@@ -14,6 +14,7 @@ import { Button } from "../ui/button";
 import { TOOLTIP_GAP_PX, Tooltip } from "../ui/tooltip";
 import {
 	CameraIcon,
+	CameraOnlyIcon,
 	CursorIcon,
 	getIcon,
 	ICON_SIZE,
@@ -322,6 +323,37 @@ export const HudCameraButton = memo(function HudCameraButton({
 				onClick={locked ? undefined : onClick}
 			>
 				<CameraIcon off={!enabled} className={enabled ? "text-[#10b981]" : ""} />
+			</button>
+		</HudTooltip>
+	);
+});
+
+/** Switches the take between a screen recording and the camera alone. Same pattern as the toggles above. */
+export const HudCameraOnlyButton = memo(function HudCameraOnlyButton({
+	enabled,
+	locked,
+	name,
+	tooltip,
+	onClick,
+}: {
+	enabled: boolean;
+	locked: boolean;
+	name: string;
+	tooltip: string;
+	onClick: () => void;
+}) {
+	return (
+		<HudTooltip content={tooltip}>
+			<button
+				type="button"
+				data-testid="launch-camera-only-button"
+				className={`${hudIconBtnClasses} ${hudLockedClasses}`}
+				aria-label={name}
+				aria-pressed={enabled}
+				aria-disabled={locked || undefined}
+				onClick={locked ? undefined : onClick}
+			>
+				<CameraOnlyIcon className={enabled ? "text-[#10b981]" : ""} />
 			</button>
 		</HudTooltip>
 	);

@@ -117,6 +117,9 @@ type UseScreenRecorderReturn = {
 	setWebcamEnabled: (enabled: boolean) => Promise<boolean>;
 	cursorCaptureMode: CursorCaptureMode;
 	setCursorCaptureMode: (mode: CursorCaptureMode) => void;
+	/** Record the camera alone: no source is picked and the camera is the take's main video. */
+	cameraOnly: boolean;
+	setCameraOnly: (enabled: boolean) => void;
 	softwareEncoderFallbackNoticeVisible: boolean;
 	dismissSoftwareEncoderFallbackNotice: (dontShowAgain?: boolean) => void;
 	recordingPrefsLoaded: boolean;
@@ -272,6 +275,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 	const [systemAudioEnabled, setSystemAudioEnabled] = useState(false);
 	const [webcamEnabled, setWebcamEnabledState] = useState(false);
 	const [cursorCaptureMode, setCursorCaptureMode] = useState<CursorCaptureMode>("editable-overlay");
+	const [cameraOnly, setCameraOnly] = useState(false);
 	const [softwareEncoderFallbackNoticeVisible, setSoftwareEncoderFallbackNoticeVisible] =
 		useState(false);
 	const [recordingPrefsLoaded, setRecordingPrefsLoaded] = useState(false);
@@ -295,6 +299,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 			camQuality?: WebcamQualityId | null;
 			systemAudioEnabled: boolean;
 			cursorCaptureMode: CursorCaptureMode;
+			cameraOnly?: boolean;
 		}) => {
 			if (cancelled) return;
 			// Not applied where a take cannot record the microphone (#700): it would ask
@@ -309,6 +314,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 				setWebcamEnabledState(prefs.camEnabled);
 				setWebcamDeviceId(prefs.camDeviceId ?? undefined);
 				setWebcamDeviceName(prefs.camDeviceName ?? undefined);
+				setCameraOnly(prefs.cameraOnly ?? false);
 			}
 			setWebcamQuality(webcamQualityFrom(prefs.camQuality));
 			setSystemAudioEnabled(prefs.systemAudioEnabled);
@@ -353,6 +359,9 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 	const webcamStream = useRef<MediaStream | null>(null);
 	const mixingContext = useRef<AudioContext | null>(null);
 	const recordingId = useRef<number>(0);
+	// The id of the take, if any, that recorded the camera alone. Its finalize has to
+	// describe a take with no cursor in it, whatever cursor mode is selected.
+	const cameraOnlyRecordingId = useRef<number | null>(null);
 	const accumulatedDurationMs = useRef(0);
 	const segmentStartedAt = useRef<number | null>(null);
 	const finalizingRecordingId = useRef<number | null>(null);
@@ -652,11 +661,12 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 						// three native paths), and off win32 it cannot exclude the system cursor
 						// — so the mode reported to the main process was forced to "system" and
 						// the stored metadata has to agree. It is user-visible: `openscreen
-						// project show` prints it.
-						cursorCaptureMode: effectiveBrowserCursorMode(
-							window.electronAPI.getPlatform(),
-							cursorCaptureMode,
-						),
+						// project show` prints it. A camera-only take captured no cursor at
+						// all, and "system" is the mode that asks the editor to draw none.
+						cursorCaptureMode:
+							cameraOnlyRecordingId.current === activeRecordingId
+								? "system"
+								: effectiveBrowserCursorMode(window.electronAPI.getPlatform(), cursorCaptureMode),
 						durationMs: duration,
 					});
 
@@ -691,6 +701,9 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 					}
 					if (discardRecordingId.current === activeRecordingId) {
 						discardRecordingId.current = null;
+					}
+					if (cameraOnlyRecordingId.current === activeRecordingId) {
+						cameraOnlyRecordingId.current = null;
 					}
 					setSaving(false);
 				}
@@ -1634,6 +1647,136 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 		}
 	};
 
+	const captureMicrophone = async (): Promise<MediaStream | null> => {
+		try {
+			return await navigator.mediaDevices.getUserMedia({
+				audio: microphoneDeviceId
+					? {
+							deviceId: { exact: microphoneDeviceId },
+							echoCancellation: true,
+							noiseSuppression: true,
+							autoGainControl: true,
+						}
+					: {
+							echoCancellation: true,
+							noiseSuppression: true,
+							autoGainControl: true,
+						},
+				video: false,
+			});
+		} catch (audioError) {
+			console.warn("Failed to get microphone access:", audioError);
+			toast.error(t("recording.microphoneDenied"));
+			setMicrophoneEnabled(false);
+			return null;
+		}
+	};
+
+	/**
+	 * Puts a browser-pipeline take on the clock once its recorders exist, and arranges
+	 * for it to be saved when the main recorder stops. Shared by the screen take and the
+	 * camera-only one, which differ only in what they feed the recorders.
+	 */
+	const beginBrowserTake = (
+		activeScreenRecorder: RecorderHandle,
+		activeRecordingId: number,
+		takeCursorCaptureMode: CursorCaptureMode,
+	) => {
+		activeScreenRecorder.recorder.addEventListener(
+			"error",
+			() => {
+				setRecording(false);
+				// The main process was told a take started (below), so it has to hear
+				// that it ended too, or the tray and the display-sleep blocker stay on.
+				window.electronAPI?.setRecordingState(false);
+			},
+			{ once: true },
+		);
+
+		accumulatedDurationMs.current = 0;
+		segmentStartedAt.current = Date.now();
+		allowAutoFinalize.current = true;
+		setRecording(true);
+		setPaused(false);
+		setElapsedSeconds(0);
+		window.electronAPI?.setRecordingState(true, activeRecordingId, takeCursorCaptureMode);
+
+		const activeWebcamRecorder = webcamRecorder.current;
+		activeScreenRecorder.recorder.addEventListener(
+			"stop",
+			() => {
+				if (!allowAutoFinalize.current) {
+					return;
+				}
+				finalizeRecording(
+					activeScreenRecorder,
+					activeWebcamRecorder ?? null,
+					Math.max(0, getRecordingDurationMs()),
+					activeRecordingId,
+				);
+			},
+			{ once: true },
+		);
+	};
+
+	/**
+	 * Records the camera alone (#1276), through the browser pipeline on every platform:
+	 * each native helper exists to capture a screen, and there is none here. The camera
+	 * is recorded as the take's MAIN video rather than as a webcam sidecar, so the editor
+	 * treats it the way it treats a screen recording — the background, padding, corner
+	 * radius and shadow all frame it — instead of looking for a screen that never existed.
+	 */
+	const startCameraOnlyRecording = async (
+		recordMicrophone: boolean,
+		countdownRunToken?: number,
+	) => {
+		if (webcamEnabled) {
+			await waitForWebcamReady();
+		}
+		if (!isCountdownRunActive(countdownRunToken)) {
+			return;
+		}
+		const cameraTrack = webcamStream.current?.getVideoTracks()[0];
+		if (!cameraTrack) {
+			throw new Error(t("recording.cameraOnlyNeedsCamera"));
+		}
+
+		const micMediaStream = recordMicrophone ? await captureMicrophone() : null;
+		microphoneStream.current = micMediaStream;
+		if (!isCountdownRunActive(countdownRunToken)) {
+			teardownMedia();
+			return;
+		}
+
+		// A clone, so the take owns a track of its own. teardownMedia() stops what was
+		// recorded, and stopping the preview's track instead would fire its `onended`,
+		// which reports the camera as disconnected and switches it off.
+		stream.current = new MediaStream([cameraTrack.clone()]);
+		const { context: mixingCtx, track: micTrack } = mixAudioTracks({
+			micAudioTrack: micMediaStream?.getAudioTracks()[0],
+		});
+		if (mixingCtx) {
+			mixingContext.current = mixingCtx;
+		}
+		if (micTrack) {
+			stream.current.addTrack(micTrack);
+		}
+
+		recordingId.current = Date.now();
+		const activeRecordingId = recordingId.current;
+		cameraOnlyRecordingId.current = activeRecordingId;
+		screenRecorder.current = createRecorderHandle(
+			stream.current,
+			{
+				...webcamRecorderOptions(stream.current),
+				...(micTrack ? { audioBitsPerSecond: AUDIO_BITRATE_VOICE } : {}),
+			},
+			`${RECORDING_FILE_PREFIX}${activeRecordingId}${VIDEO_FILE_EXTENSION}`,
+		);
+		// No cursor telemetry: nothing on screen was recorded for a cursor to point at.
+		beginBrowserTake(screenRecorder.current, activeRecordingId, "system");
+	};
+
 	const startRecordCountdown = async () => {
 		if (countdownActive || recording) {
 			return;
@@ -1649,8 +1792,11 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 			console.warn("Failed to read selected source before countdown:", error);
 		}
 
-		// Resolved before the liveness check below so every await stays ahead of it.
-		const portalOwnsSource = await portalOwnsSourceSelection(window.electronAPI);
+		// Resolved before the liveness check below so every await stays ahead of it. A
+		// camera-only take records no screen, so there is no portal to raise for it.
+		const portalOwnsSource = cameraOnly
+			? false
+			: await portalOwnsSourceSelection(window.electronAPI);
 
 		if (!isCountdownRunActive(runId)) {
 			return;
@@ -1661,7 +1807,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 		// its picker is raised when capture starts, several steps after this — so
 		// there is nothing to have selected, and refusing here blocked recording
 		// outright once the in-app picker was removed.
-		if (!selectedSource && !portalOwnsSource) {
+		if (!selectedSource && !portalOwnsSource && !cameraOnly) {
 			if (countdownRunId.current === runId) {
 				setCountdownActive(false);
 			}
@@ -1671,7 +1817,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 
 		try {
 			const platform = window.electronAPI.getPlatform();
-			if (platform === "darwin" && cursorCaptureMode === "editable-overlay") {
+			if (platform === "darwin" && !cameraOnly && cursorCaptureMode === "editable-overlay") {
 				// Accessibility only improves cursor shape hints. Keep recording when
 				// the grant is pending or the helper is unavailable; the cursor session
 				// falls back to position-only telemetry when needed.
@@ -1813,6 +1959,11 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 				toast.error(t("rec.noMicrophoneFound"));
 			}
 
+			if (cameraOnly) {
+				await startCameraOnlyRecording(recordMicrophone, countdownRunToken);
+				return;
+			}
+
 			// BEFORE THE SOURCE GATE, on purpose. On Wayland the portal raises its
 			// own picker and is the only thing that can choose a source, so there
 			// is nothing for the app to have selected — and the helper needs no
@@ -1912,32 +2063,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 				} as unknown as MediaStreamConstraints);
 			})();
 
-			const micCapture: Promise<MediaStream | null> = recordMicrophone
-				? (async () => {
-						try {
-							return await navigator.mediaDevices.getUserMedia({
-								audio: microphoneDeviceId
-									? {
-											deviceId: { exact: microphoneDeviceId },
-											echoCancellation: true,
-											noiseSuppression: true,
-											autoGainControl: true,
-										}
-									: {
-											echoCancellation: true,
-											noiseSuppression: true,
-											autoGainControl: true,
-										},
-								video: false,
-							});
-						} catch (audioError) {
-							console.warn("Failed to get microphone access:", audioError);
-							toast.error(t("recording.microphoneDenied"));
-							setMicrophoneEnabled(false);
-							return null;
-						}
-					})()
-				: Promise.resolve(null);
+			const micCapture = recordMicrophone ? captureMicrophone() : Promise.resolve(null);
 
 			// Await both in-flight captures. If the screen capture rejects it would
 			// otherwise orphan a mic stream that resolved in parallel (leaving the
@@ -2067,16 +2193,6 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 				},
 				`${RECORDING_FILE_PREFIX}${activeRecordingId}${VIDEO_FILE_EXTENSION}`,
 			);
-			screenRecorder.current.recorder.addEventListener(
-				"error",
-				() => {
-					setRecording(false);
-					// The main process was told a take started (below), so it has to hear
-					// that it ended too, or the tray and the display-sleep blocker stay on.
-					window.electronAPI?.setRecordingState(false);
-				},
-				{ once: true },
-			);
 
 			if (webcamStream.current) {
 				webcamRecorder.current = createRecorderHandle(
@@ -2086,33 +2202,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 				);
 			}
 
-			accumulatedDurationMs.current = 0;
-			segmentStartedAt.current = Date.now();
-			allowAutoFinalize.current = true;
-			setRecording(true);
-			setPaused(false);
-			setElapsedSeconds(0);
-			window.electronAPI?.setRecordingState(true, recordingId.current, browserCursorCaptureMode);
-
-			const activeScreenRecorder = screenRecorder.current;
-			const activeWebcamRecorder = webcamRecorder.current;
-			if (activeScreenRecorder) {
-				activeScreenRecorder.recorder.addEventListener(
-					"stop",
-					() => {
-						if (!allowAutoFinalize.current) {
-							return;
-						}
-						finalizeRecording(
-							activeScreenRecorder,
-							activeWebcamRecorder ?? null,
-							Math.max(0, getRecordingDurationMs()),
-							activeRecordingId,
-						);
-					},
-					{ once: true },
-				);
-			}
+			beginBrowserTake(screenRecorder.current, activeRecordingId, browserCursorCaptureMode);
 		} catch (error) {
 			console.error("Failed to start recording:", error);
 			const errorMsg = error instanceof Error ? error.message : "Failed to start recording";
@@ -2491,6 +2581,8 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 		setWebcamEnabled,
 		cursorCaptureMode,
 		setCursorCaptureMode,
+		cameraOnly,
+		setCameraOnly,
 		softwareEncoderFallbackNoticeVisible,
 		dismissSoftwareEncoderFallbackNotice,
 		recordingPrefsLoaded,

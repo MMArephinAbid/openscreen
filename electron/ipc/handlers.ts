@@ -4125,6 +4125,13 @@ export function registerIpcHandlers(
 				await startCursorRecording(recordingId);
 			} else {
 				await stopCursorRecording();
+				// A take that records no cursor (system mode, or the camera alone) starts with
+				// no telemetry, as startCursorRecording's take does. Whatever is pending here
+				// belongs to an earlier take, and store-recorded-session would otherwise write
+				// it beside this one as its `.cursor.json`.
+				if (recording) {
+					pendingCursorRecordingData = null;
+				}
 			}
 
 			const source = selectedSource || { name: "Screen" };

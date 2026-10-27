@@ -124,6 +124,7 @@ export function LaunchWindow() {
 		setSystemAudioEnabled,
 		webcamEnabled,
 		setWebcamEnabled,
+		cancelPendingWebcamEnable,
 		webcamDeviceId,
 		setWebcamDeviceId,
 		webcamQuality,
@@ -884,7 +885,9 @@ export function LaunchWindow() {
 			// The take was set up by whoever sent this (the editor's Record mode, or an MCP
 			// client), with the recording prefs already written for it. A camera only still
 			// being switched on here is dropped rather than written over them.
+			// Its camera check too, or the camera it was turning on switches on for this take.
 			cameraOnlyActivation.current += 1;
+			cancelPendingWebcamEnable();
 			setCameraOnlyPending(false);
 			void (async () => {
 				let sourceSelected = hasSelectedSourceRef.current;
@@ -898,7 +901,7 @@ export function LaunchWindow() {
 				handleRecordButtonClickRef.current(sourceSelected);
 			})();
 		});
-	}, [applySelectedSource]);
+	}, [applySelectedSource, cancelPendingWebcamEnable]);
 
 	const sendHudOverlayHide = useCallback(() => {
 		window.electronAPI?.hudOverlayHide?.();

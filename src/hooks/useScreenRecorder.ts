@@ -115,6 +115,8 @@ type UseScreenRecorderReturn = {
 	setSystemAudioEnabled: (enabled: boolean) => void;
 	webcamEnabled: boolean;
 	setWebcamEnabled: (enabled: boolean) => Promise<boolean>;
+	/** Drops a turn-on still waiting on the camera check: it then answers false. */
+	cancelPendingWebcamEnable: () => void;
 	cursorCaptureMode: CursorCaptureMode;
 	setCursorCaptureMode: (mode: CursorCaptureMode) => void;
 	/** Record the camera alone: no source is picked and the camera is the take's main video. */
@@ -482,8 +484,12 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 		webcamReady.current = true;
 	}, []);
 
+	// Each call to setWebcamEnabled, and each cancel, supersedes a turn-on still waiting on the
+	// camera check: that check answering late must not switch the camera on behind them.
+	const webcamEnableRequest = useRef(0);
 	const setWebcamEnabled = useCallback(
 		async (enabled: boolean) => {
+			const request = ++webcamEnableRequest.current;
 			if (!enabled) {
 				setWebcamEnabledState(false);
 				return true;
@@ -492,12 +498,18 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 			if (!(await canTurnCameraOn(t))) {
 				return false;
 			}
+			if (request !== webcamEnableRequest.current) {
+				return false;
+			}
 
 			setWebcamEnabledState(true);
 			return true;
 		},
 		[t],
 	);
+	const cancelPendingWebcamEnable = useCallback(() => {
+		webcamEnableRequest.current += 1;
+	}, []);
 
 	useEffect(() => {
 		if (!webcamEnabled) return;
@@ -2595,6 +2607,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 		setSystemAudioEnabled,
 		webcamEnabled,
 		setWebcamEnabled,
+		cancelPendingWebcamEnable,
 		cursorCaptureMode,
 		setCursorCaptureMode,
 		cameraOnly,

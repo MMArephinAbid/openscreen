@@ -65,6 +65,7 @@ const recorderState = vi.hoisted(() => ({
 		setMicrophoneDeviceName: vi.fn(),
 		webcamEnabled: false,
 		setWebcamEnabled: vi.fn(async () => true),
+		cancelPendingWebcamEnable: vi.fn(),
 		webcamDeviceId: undefined,
 		setWebcamDeviceId: vi.fn(),
 		setWebcamDeviceName: vi.fn(),
@@ -370,6 +371,7 @@ function resetLaunchMocks() {
 	recorderState.value.setMicrophoneDeviceId.mockClear();
 	recorderState.value.webcamEnabled = false;
 	recorderState.value.setWebcamEnabled.mockClear();
+	recorderState.value.cancelPendingWebcamEnable.mockClear();
 	recorderState.value.cameraOnly = false;
 	recorderState.value.setCameraOnly.mockClear();
 	recorderState.value.recordingPrefsLoaded = true;
@@ -2035,6 +2037,7 @@ describe("LaunchWindow camera only", () => {
 		await waitFor(() => expect(screen.getByTestId("launch-record-button")).toBeDisabled());
 
 		await act(async () => autoStart?.());
+		expect(recorderState.value.cancelPendingWebcamEnable).toHaveBeenCalledTimes(1);
 		await waitFor(() => expect(recorderState.value.toggleRecording).toHaveBeenCalledTimes(1));
 		await act(async () => answer(true));
 

@@ -131,6 +131,33 @@ describe("useScreenRecorder on a machine without a camera (#967)", () => {
 		expect(view.result.current.cameraOnly).toBe(false);
 	});
 
+	// getopenscreen/openscreen#1398 review: a take set up elsewhere cancels a turn-on still
+	// waiting on the camera check, and that check answering late must not switch the camera on.
+	it("leaves the camera off when a pending turn-on is cancelled", async () => {
+		let listDevices!: (devices: unknown[]) => void;
+		enumerateDevices = vi.fn(
+			() =>
+				new Promise((resolve) => {
+					listDevices = resolve;
+				}),
+		);
+		stub(prefs(false));
+		const view = renderHook(() => useScreenRecorder());
+		await waitFor(() => expect(view.result.current.recordingPrefsLoaded).toBe(true));
+
+		let turnedOn!: Promise<boolean>;
+		act(() => {
+			turnedOn = view.result.current.setWebcamEnabled(true);
+		});
+		await waitFor(() => expect(enumerateDevices).toHaveBeenCalled());
+		act(() => view.result.current.cancelPendingWebcamEnable());
+		await act(async () => listDevices([CAMERA]));
+
+		expect(await turnedOn).toBe(false);
+		expect(view.result.current.webcamEnabled).toBe(false);
+		expect(getUserMedia).not.toHaveBeenCalled();
+	});
+
 	it("stores camera only and the camera as off when the camera disconnects", async () => {
 		enumerateDevices = vi.fn(async () => [CAMERA]);
 		const track: { stop: () => void; onended: (() => void) | null } = {

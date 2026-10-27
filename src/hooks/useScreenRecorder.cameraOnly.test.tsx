@@ -178,7 +178,12 @@ describe("useScreenRecorder camera only (#1276)", () => {
 	});
 
 	it("says a camera is needed instead of recording nothing", async () => {
-		stubElectronAPI(false);
+		stubElectronAPI(true);
+		// The camera opens but hands over no video track.
+		vi.mocked(navigator.mediaDevices.getUserMedia).mockResolvedValue({
+			getTracks: () => [],
+			getVideoTracks: () => [],
+		} as unknown as MediaStream);
 		const view = renderHook(() => useScreenRecorder());
 		await settle();
 

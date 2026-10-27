@@ -432,6 +432,7 @@ export const HudRecordButton = memo(function HudRecordButton({
 	recording,
 	paused,
 	saving,
+	pending = false,
 	elapsedSeconds,
 	label,
 	savingLabel,
@@ -440,6 +441,8 @@ export const HudRecordButton = memo(function HudRecordButton({
 	recording: boolean;
 	paused: boolean;
 	saving: boolean;
+	/** Held off for a moment: what the take will record is still being decided. */
+	pending?: boolean;
 	elapsedSeconds: number;
 	label: string;
 	savingLabel: string;
@@ -451,7 +454,7 @@ export const HudRecordButton = memo(function HudRecordButton({
 		<HudTooltip content={label}>
 			<button
 				data-testid="launch-record-button"
-				disabled={saving}
+				disabled={saving || pending}
 				// A soft red wash at rest, so the main action reads as one from across the bar.
 				className={`flex h-[34px] shrink-0 items-center justify-center rounded-[17px] border-0 transition-all duration-150 ${recording || saving ? "min-w-[78px] px-3" : "w-[34px]"} ${hudFocusClasses} ${styles.electronNoDrag} ${
 					saving

@@ -1972,6 +1972,50 @@ describe("LaunchWindow camera only", () => {
 		expect(window.electronAPI.openSourceSelector).not.toHaveBeenCalled();
 	});
 
+	// getopenscreen/openscreen#1398 review: between the click and the camera check's answer the
+	// take is neither kind, so Record waits, and an answer that arrives mid-take changes nothing.
+	it("holds Record while camera only is being switched on", async () => {
+		let answer!: (ok: boolean) => void;
+		recorderState.value.setWebcamEnabled.mockImplementationOnce(
+			() => new Promise<boolean>((resolve) => (answer = resolve)),
+		);
+		renderLaunchWindow();
+		fireEvent.click(await screen.findByTestId("launch-camera-only-button"));
+
+		const recordButton = screen.getByTestId("launch-record-button");
+		await waitFor(() => expect(recordButton).toBeDisabled());
+		fireEvent.click(recordButton);
+		expect(recorderState.value.toggleRecording).not.toHaveBeenCalled();
+		expect(window.electronAPI.openSourceSelector).not.toHaveBeenCalled();
+
+		await act(async () => answer(true));
+		expect(recordButton).toBeEnabled();
+		expect(recorderState.value.setCameraOnly).toHaveBeenCalledWith(true);
+	});
+
+	it("does not switch a take that started meanwhile to camera only", async () => {
+		let answer!: (ok: boolean) => void;
+		recorderState.value.setWebcamEnabled.mockImplementationOnce(
+			() => new Promise<boolean>((resolve) => (answer = resolve)),
+		);
+		const view = renderLaunchWindow();
+		fireEvent.click(await screen.findByTestId("launch-camera-only-button"));
+
+		// A take begun from elsewhere (the editor's Record mode) while the check runs.
+		recorderState.value.recording = true;
+		view.rerender(
+			<TooltipProvider>
+				<LaunchWindow />
+			</TooltipProvider>,
+		);
+		await act(async () => answer(true));
+
+		expect(recorderState.value.setCameraOnly).not.toHaveBeenCalled();
+		expect(window.electronAPI.setRecordingPrefs).not.toHaveBeenCalledWith(
+			expect.objectContaining({ cameraOnly: true }),
+		);
+	});
+
 	it("leaves camera only when the camera is switched off", async () => {
 		recorderState.value.cameraOnly = true;
 		recorderState.value.webcamEnabled = true;

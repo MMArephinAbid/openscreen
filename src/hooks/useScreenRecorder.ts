@@ -314,7 +314,10 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 				setWebcamEnabledState(prefs.camEnabled);
 				setWebcamDeviceId(prefs.camDeviceId ?? undefined);
 				setWebcamDeviceName(prefs.camDeviceName ?? undefined);
-				setCameraOnly(prefs.cameraOnly ?? false);
+				// Camera only needs the camera. A stored pair that disagrees (written by a
+				// window that cleared one flag and not the other) must not restore a HUD with
+				// no source picker and a Record that can only fail.
+				setCameraOnly(Boolean(prefs.cameraOnly && prefs.camEnabled));
 			}
 			setWebcamQuality(webcamQualityFrom(prefs.camQuality));
 			setSystemAudioEnabled(prefs.systemAudioEnabled);
@@ -525,6 +528,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 						webcamStream.current = null;
 						if (!restarting.current) {
 							setWebcamEnabledState(false);
+							setCameraOnly(false);
 							toast.error(t("recording.cameraDisconnected"));
 						}
 					};
@@ -539,11 +543,16 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 				if (!cancelled) {
 					console.warn("Failed to get webcam access:", cameraError);
 					setWebcamEnabledState(false);
+					// Camera only goes with the camera: left on, it hides the source picker
+					// and leaves a Record that always fails.
+					setCameraOnly(false);
 					// The stored preference has to follow, or the editor's Record mode
 					// keeps reading "On" from it while the HUD shows the camera off (#967).
-					void window.electronAPI?.setRecordingPrefs?.({ camEnabled: false }).catch((error) => {
-						console.warn("Failed to persist the camera preference:", error);
-					});
+					void window.electronAPI
+						?.setRecordingPrefs?.({ camEnabled: false, cameraOnly: false })
+						.catch((error) => {
+							console.warn("Failed to persist the camera preference:", error);
+						});
 					const isDeviceError =
 						cameraError instanceof DOMException &&
 						[

@@ -172,6 +172,12 @@ export function LaunchWindow() {
 	const isVertical = trayLayout === "vertical";
 	const isPopoverOpen = isLanguageMenuOpen || isDeviceSettingsOpen;
 	const controlsLocked = recording || saving;
+	// Camera only is being switched on and the camera check has not answered: see toggleCameraOnly.
+	const [cameraOnlyPending, setCameraOnlyPending] = useState(false);
+	const controlsLockedRef = useRef(controlsLocked);
+	useLayoutEffect(() => {
+		controlsLockedRef.current = controlsLocked;
+	}, [controlsLocked]);
 
 	const settingsTriggerRef = useRef<HTMLButtonElement | null>(null);
 	const languageTriggerRef = useRef<HTMLButtonElement | null>(null);
@@ -802,7 +808,8 @@ export function LaunchWindow() {
 
 	const handleRecordButtonClick = useCallback(
 		(sourceSelectedOverride?: boolean) => {
-			if (saving) {
+			// Not yet known whether the take records the screen or the camera alone.
+			if (saving || (cameraOnlyPending && !recording)) {
 				return;
 			}
 			if (recording) {
@@ -844,6 +851,7 @@ export function LaunchWindow() {
 		},
 		[
 			cameraOnly,
+			cameraOnlyPending,
 			hasSelectedSource,
 			portalOwnsSource,
 			openSourceSelector,
@@ -1001,20 +1009,29 @@ export function LaunchWindow() {
 
 	// Turning camera only on switches the camera on with it: that is the whole take. The
 	// camera check runs first, so a camera the OS does not list refuses both (#995).
+	//
+	// The check is asynchronous, and until it answers the take is neither a screen take nor a
+	// camera one. Record is held off for that time: pressed in between, it started a screen
+	// take, and the answer then switched the HUD to camera only while the screen recorded.
 	const toggleCameraOnly = useCallback(() => {
-		if (controlsLocked) return;
+		if (controlsLocked || cameraOnlyPending) return;
 		if (cameraOnly) {
 			setCameraOnly(false);
 			persistRecordingPrefs({ cameraOnly: false });
 			return;
 		}
-		void (webcamEnabled ? Promise.resolve(true) : setWebcamEnabled(true)).then((ok) => {
-			if (!ok) return;
-			setCameraOnly(true);
-			persistRecordingPrefs({ camEnabled: true, cameraOnly: true });
-		});
+		setCameraOnlyPending(true);
+		void (webcamEnabled ? Promise.resolve(true) : setWebcamEnabled(true))
+			.then((ok) => {
+				// A take that began anyway (from another window) keeps what it started with.
+				if (!ok || controlsLockedRef.current) return;
+				setCameraOnly(true);
+				persistRecordingPrefs({ camEnabled: true, cameraOnly: true });
+			})
+			.finally(() => setCameraOnlyPending(false));
 	}, [
 		cameraOnly,
+		cameraOnlyPending,
 		controlsLocked,
 		persistRecordingPrefs,
 		setCameraOnly,
@@ -1369,6 +1386,7 @@ export function LaunchWindow() {
 							recording={recording}
 							paused={paused}
 							saving={saving}
+							pending={cameraOnlyPending && !recording}
 							elapsedSeconds={elapsedSeconds}
 							label={recordLabel}
 							savingLabel={t("recording.saving")}

@@ -2016,6 +2016,34 @@ describe("LaunchWindow camera only", () => {
 		);
 	});
 
+	// A take set up elsewhere (an MCP client, the editor's Record mode) has written its own
+	// prefs before it asks the HUD to start. A camera only still pending here must neither
+	// write over them nor hold that take back.
+	it("drops a pending camera only when a take is started from elsewhere", async () => {
+		let autoStart: (() => void) | undefined;
+		window.electronAPI.onAutoStartRecording = vi.fn((callback: () => void) => {
+			autoStart = callback;
+			return () => undefined;
+		});
+		window.electronAPI.getSelectedSource = vi.fn(async () => displayOneSource);
+		let answer!: (ok: boolean) => void;
+		recorderState.value.setWebcamEnabled.mockImplementationOnce(
+			() => new Promise<boolean>((resolve) => (answer = resolve)),
+		);
+		renderLaunchWindow();
+		fireEvent.click(await screen.findByTestId("launch-camera-only-button"));
+		await waitFor(() => expect(screen.getByTestId("launch-record-button")).toBeDisabled());
+
+		await act(async () => autoStart?.());
+		await waitFor(() => expect(recorderState.value.toggleRecording).toHaveBeenCalledTimes(1));
+		await act(async () => answer(true));
+
+		expect(recorderState.value.setCameraOnly).not.toHaveBeenCalled();
+		expect(window.electronAPI.setRecordingPrefs).not.toHaveBeenCalledWith(
+			expect.objectContaining({ cameraOnly: true }),
+		);
+	});
+
 	it("leaves camera only when the camera is switched off", async () => {
 		recorderState.value.cameraOnly = true;
 		recorderState.value.webcamEnabled = true;

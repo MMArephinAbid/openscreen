@@ -174,6 +174,8 @@ export function LaunchWindow() {
 	const controlsLocked = recording || saving;
 	// Camera only is being switched on and the camera check has not answered: see toggleCameraOnly.
 	const [cameraOnlyPending, setCameraOnlyPending] = useState(false);
+	// Bumped to drop a pending activation whose answer must no longer apply.
+	const cameraOnlyActivation = useRef(0);
 	const controlsLockedRef = useRef(controlsLocked);
 	useLayoutEffect(() => {
 		controlsLockedRef.current = controlsLocked;
@@ -808,8 +810,7 @@ export function LaunchWindow() {
 
 	const handleRecordButtonClick = useCallback(
 		(sourceSelectedOverride?: boolean) => {
-			// Not yet known whether the take records the screen or the camera alone.
-			if (saving || (cameraOnlyPending && !recording)) {
+			if (saving) {
 				return;
 			}
 			if (recording) {
@@ -851,7 +852,6 @@ export function LaunchWindow() {
 		},
 		[
 			cameraOnly,
-			cameraOnlyPending,
 			hasSelectedSource,
 			portalOwnsSource,
 			openSourceSelector,
@@ -861,7 +861,12 @@ export function LaunchWindow() {
 			toggleRecording,
 		],
 	);
-	const handleRecordClick = useCallback(() => handleRecordButtonClick(), [handleRecordButtonClick]);
+	// The user's own Record waits while camera only is being switched on: until the camera
+	// check answers, it is not known whether the take records the screen or the camera alone.
+	const handleRecordClick = useCallback(() => {
+		if (cameraOnlyPending && !recording) return;
+		handleRecordButtonClick();
+	}, [cameraOnlyPending, handleRecordButtonClick, recording]);
 
 	// The editor's Rec-mode stage sends this once it hands off to the HUD
 	// (source + prefs already persisted via IPC), so the user doesn't have to
@@ -876,6 +881,11 @@ export function LaunchWindow() {
 	hasSelectedSourceRef.current = hasSelectedSource;
 	useEffect(() => {
 		return window.electronAPI?.onAutoStartRecording?.(() => {
+			// The take was set up by whoever sent this (the editor's Record mode, or an MCP
+			// client), with the recording prefs already written for it. A camera only still
+			// being switched on here is dropped rather than written over them.
+			cameraOnlyActivation.current += 1;
+			setCameraOnlyPending(false);
 			void (async () => {
 				let sourceSelected = hasSelectedSourceRef.current;
 				try {
@@ -1020,15 +1030,21 @@ export function LaunchWindow() {
 			persistRecordingPrefs({ cameraOnly: false });
 			return;
 		}
+		const activation = ++cameraOnlyActivation.current;
 		setCameraOnlyPending(true);
 		void (webcamEnabled ? Promise.resolve(true) : setWebcamEnabled(true))
 			.then((ok) => {
-				// A take that began anyway (from another window) keeps what it started with.
-				if (!ok || controlsLockedRef.current) return;
+				// Dropped by a take set up elsewhere, or a take that began anyway: either keeps
+				// the settings it started with.
+				if (!ok || activation !== cameraOnlyActivation.current || controlsLockedRef.current) {
+					return;
+				}
 				setCameraOnly(true);
 				persistRecordingPrefs({ camEnabled: true, cameraOnly: true });
 			})
-			.finally(() => setCameraOnlyPending(false));
+			.finally(() => {
+				if (activation === cameraOnlyActivation.current) setCameraOnlyPending(false);
+			});
 	}, [
 		cameraOnly,
 		cameraOnlyPending,

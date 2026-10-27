@@ -529,6 +529,13 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 						if (!restarting.current) {
 							setWebcamEnabledState(false);
 							setCameraOnly(false);
+							// Stored too, as when the camera fails to open: left on, the next HUD
+							// restores a camera only with no camera behind it.
+							void window.electronAPI
+								?.setRecordingPrefs?.({ camEnabled: false, cameraOnly: false })
+								.catch((error) => {
+									console.warn("Failed to persist the camera preference:", error);
+								});
 							toast.error(t("recording.cameraDisconnected"));
 						}
 					};

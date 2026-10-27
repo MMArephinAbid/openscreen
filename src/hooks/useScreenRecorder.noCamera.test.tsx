@@ -131,6 +131,26 @@ describe("useScreenRecorder on a machine without a camera (#967)", () => {
 		expect(view.result.current.cameraOnly).toBe(false);
 	});
 
+	it("stores camera only and the camera as off when the camera disconnects", async () => {
+		enumerateDevices = vi.fn(async () => [CAMERA]);
+		const track: { stop: () => void; onended: (() => void) | null } = {
+			stop: vi.fn(),
+			onended: null,
+		};
+		getUserMedia = vi.fn(async () => ({ getVideoTracks: () => [track], getTracks: () => [track] }));
+		stub({ ...prefs(true), cameraOnly: true });
+		const view = renderHook(() => useScreenRecorder());
+		await waitFor(() => expect(track.onended).toBeTypeOf("function"));
+		expect(view.result.current.cameraOnly).toBe(true);
+
+		act(() => track.onended?.());
+
+		expect(setRecordingPrefs).toHaveBeenCalledWith({ camEnabled: false, cameraOnly: false });
+		expect(view.result.current.webcamEnabled).toBe(false);
+		expect(view.result.current.cameraOnly).toBe(false);
+		expect(toast.error).toHaveBeenCalledWith("recording.cameraDisconnected");
+	});
+
 	it("does not restore camera only from a stored pair whose camera is off", async () => {
 		stub({ ...prefs(false), cameraOnly: true });
 		const view = renderHook(() => useScreenRecorder());
